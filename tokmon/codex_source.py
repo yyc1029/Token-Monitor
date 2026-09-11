@@ -96,7 +96,10 @@ class CodexUsage:
 
             if t == "event_msg" and payload.get("type") == "token_count":
                 rl = payload.get("rate_limits")
-                if rl and ts >= self.limits_ts:
+                # Codex emits one token_count per limit bucket per turn; the
+                # "premium" bucket comes with primary/secondary = null and would
+                # otherwise overwrite the real "codex" numbers written 0.6 s earlier.
+                if rl and rl.get("primary") and ts >= self.limits_ts:
                     self.limits = self._shape_limits(rl, ts)
                     self.limits_ts = ts
                 info = payload.get("info") or {}

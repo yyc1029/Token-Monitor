@@ -161,14 +161,20 @@ FETCHERS = {"claude": fetch_claude, "codex": fetch_codex}
 
 
 def merge_limits(cached, live):
-    """Prefer whichever of the two was fetched more recently; tag the winner."""
-    if live and (not cached or (live.get("fetched_at") or 0) >= (cached.get("fetched_at") or 0)):
-        out = dict(cached or {})
-        out.update({k: v for k, v in live.items() if v is not None or k not in out})
-        out["source"] = "live"
-        return out
-    if cached:
-        out = dict(cached)
-        out["source"] = "cache"
-        return out
-    return None
+    """Prefer whichever of the two was fetched more recently; tag the winner.
+
+    A fresher record that lacks a window (a CLI cache entry with nulls, say)
+    never hides an older record that has it - missing windows are filled from
+    the other side.
+    """
+    if not cached and not live:
+        return None
+    live_newer = bool(live) and (not cached or (live.get("fetched_at") or 0) >= (cached.get("fetched_at") or 0))
+    winner, loser = (live, cached) if live_newer else (cached, live)
+    out = dict(loser or {})
+    out.update({k: v for k, v in winner.items() if v is not None or k not in out})
+    for key in ("five_hour", "seven_day"):
+        if not out.get(key) and loser and loser.get(key):
+            out[key] = loser[key]
+    out["source"] = "live" if live_newer else "cache"
+    return out
