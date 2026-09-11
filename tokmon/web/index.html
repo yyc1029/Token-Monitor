@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Monitor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%233987e5'/%3E%3Crect x='3' y='9' width='2' height='4' fill='white'/%3E%3Crect x='7' y='5' width='2' height='8' fill='white'/%3E%3Crect x='11' y='3' width='2' height='10' fill='white'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #222221;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+    --accent: #3987e5; --accent-track: #0d366b;
+    --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+    --font: system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --page: #f9f9f7; --surface: #fcfcfb; --surface-2: #f0efec;
+      --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+      --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+      --accent: #2a78d6; --accent-track: #cde2fb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--font); padding: 20px 24px 40px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  header h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+  .status { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); display: inline-block; }
+  .dot.stale { background: var(--warn); } .dot.dead { background: var(--crit); }
+  .toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font: inherit; font-size: 12px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px 4px 6px; cursor: pointer; }
+  .toggle .sw { width: 28px; height: 16px; border-radius: 999px; background: var(--grid); position: relative; transition: background .2s; }
+  .toggle .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); transition: left .2s; }
+  .toggle.on .sw { background: var(--good); } .toggle.on .sw::after { left: 14px; }
+  .toggle.busy { opacity: .6; pointer-events: none; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
+  @media (max-width: 480px) { .grid { grid-template-columns: 1fr; } body { padding: 14px 16px 30px; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .card-head h2 { margin: 0; font-size: 17px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .logo { width: 22px; height: 22px; border-radius: 6px; display: inline-grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .logo.claude { background: #d97757; } .logo.codex { background: #10a37f; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); background: var(--surface-2); text-transform: capitalize; }
+  .fresh { font-size: 12px; color: var(--muted); }
+  .fresh.old { color: var(--warn); }
+  .meter-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+  @media (max-width: 560px) { .meter-row { grid-template-columns: 1fr; } }
+  .meter { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; }
+  .meter .lbl { font-size: 12px; color: var(--ink-2); display: flex; justify-content: space-between; }
+  .meter .val { font-size: 34px; font-weight: 600; line-height: 1.1; margin: 4px 0 8px; }
+  .meter .val small { font-size: 15px; color: var(--ink-2); font-weight: 500; margin-left: 2px; }
+  .track { height: 10px; border-radius: 999px; background: var(--accent-track); overflow: hidden; }
+  .fill { height: 100%; border-radius: 999px; background: var(--accent); width: 0; transition: width .5s ease; }
+  .meter.warn .track { background: color-mix(in oklab, var(--warn) 22%, var(--surface-2)); } .meter.warn .fill { background: var(--warn); }
+  .meter.serious .track { background: color-mix(in oklab, var(--serious) 22%, var(--surface-2)); } .meter.serious .fill { background: var(--serious); }
+  .meter.crit .track { background: color-mix(in oklab, var(--crit) 25%, var(--surface-2)); } .meter.crit .fill { background: var(--crit); }
+  .meter .reset { font-size: 12px; color: var(--muted); margin-top: 7px; display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+  .meter .reset b { color: var(--ink-2); font-weight: 500; }
+  .meter.none .val { color: var(--muted); font-size: 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 560px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile { padding: 8px 10px; border-left: 2px solid var(--grid); }
+  .tile .l { font-size: 11px; color: var(--muted); } .tile .v { font-size: 18px; font-weight: 600; margin-top: 2px; }
+  .tile .s { font-size: 11px; color: var(--ink-2); }
+  section h3 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .06em; }
+  .spark { position: relative; }
+  .spark svg { width: 100%; height: 70px; display: block; }
+  .spark rect.bar { fill: var(--accent); }
+  .spark rect.hit { fill: transparent; }
+  .spark rect.hit:hover + rect.bar, .spark g:hover rect.bar { fill: color-mix(in oklab, var(--accent) 70%, white); }
+  .spark line.base { stroke: var(--grid); stroke-width: 1; }
+  .spark .axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--page); font-size: 11px; padding: 4px 7px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 500; color: var(--muted); font-size: 11px; padding: 4px 6px; border-bottom: 1px solid var(--grid); }
+  td { padding: 5px 6px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.num, th.num { text-align: right; }
+  td.model { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+  tr:last-child td { border-bottom: 0; }
+  .table-wrap { overflow-x: auto; }
+  .sess { display: flex; flex-direction: column; gap: 8px; }
+  .sess .row { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: 12px; }
+  .sess .name { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sess .ctx { grid-column: 1 / -1; height: 4px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+  .sess .ctx i { display: block; height: 100%; background: var(--accent); }
+  .empty { color: var(--muted); font-size: 12px; }
+  .err { color: var(--crit); font-size: 12px; margin-top: 12px; }
+  .footnote { color: var(--muted); font-size: 11px; margin-top: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Token Monitor</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">連線中…</span></div>
+  <button id="pet-toggle" class="toggle" type="button" title="啟動或關閉桌面寵物"><span class="sw"></span><span id="pet-label">桌面寵物</span></button>
+</header>
+
+<div class="grid">
+  <div class="card" id="card-claude">
+    <div class="card-head">
+      <h2><span class="logo claude">C</span>Claude Code <span class="badge" id="claude-plan">—</span></h2>
+      <span class="fresh" id="claude-fresh">額度資料：—</span>
+    </div>
+    <div class="meter-row">
+      <div class="meter" id="claude-5h"></div>
+      <div class="meter" id="claude-7d"></div>
+      <div class="meter" id="claude-extra" hidden></div>
+    </div>
+    <div class="tiles" id="claude-tiles"></div>
+    <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="claude-spark"></div></section>
+    <section><h3>今日各模型</h3><div class="table-wrap" id="claude-models"></div></section>
+    <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="claude-sessions"></div></section>
+  </div>
+
+  <div class="card" id="card-codex">
+    <div class="card-head">
+      <h2><span class="logo codex">X</span>Codex <span class="badge" id="codex-plan">—</span></h2>
+      <span class="fresh" id="codex-fresh">額度資料：—</span>
+    </div>
+    <div class="meter-row">
+      <div class="meter" id="codex-5h"></div>
+      <div class="meter" id="codex-7d"></div>
+    </div>
+    <div class="tiles" id="codex-tiles"></div>
+    <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="codex-spark"></div></section>
+    <section><h3>今日各模型</h3><div class="table-wrap" id="codex-models"></div></section>
+    <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="codex-sessions"></div></section>
+  </div>
+</div>
+<div class="err" id="err" hidden></div>
+<div class="footnote">額度百分比預設每 60 秒向 Anthropic / OpenAI 官方端點即時查詢（使用本機 CLI 已登入的 token，只送到發行者），查不到時退回 CLI 的本機快取；token 與費用由本機對話紀錄計算。Claude 費用為等值 API 價格，Codex 費用需在 config.json 填入單價。</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  let snap = null, lastOk = 0;
+
+  const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(Math.round(n));
+  const fmtUsd = (v) => '$' + (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
+  const pad = (n) => String(n).padStart(2, '0');
+  function fmtDur(sec) {
+    if (sec == null) return '—';
+    if (sec <= 0) return '已重置';
+    const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = Math.floor(sec % 60);
+    if (d > 0) return `${d} 天 ${h} 小時`;
+    if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+    return `${m}:${pad(s)}`;
+  }
+  function fmtAgo(sec) {
+    if (sec == null) return '—';
+    if (sec < 60) return `${Math.floor(sec)} 秒前`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} 分鐘前`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)} 小時前`;
+    return `${Math.floor(sec / 86400)} 天前`;
+  }
+  const fmtClock = (ts) => { const d = new Date(ts * 1000); return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function severity(p) { return p == null ? '' : p >= 90 ? 'crit' : p >= 75 ? 'serious' : p >= 50 ? 'warn' : ''; }
+
+  function renderMeter(el, title, w, now) {
+    if (!w || w.used_percent == null) {
+      el.className = 'meter none';
+      el.innerHTML = `<div class="lbl"><span>${title}</span></div><div class="val">尚無資料</div>`;
+      return;
+    }
+    const p = Math.max(0, Math.min(100, Number(w.used_percent)));
+    el.className = 'meter ' + severity(p);
+    const remain = w.resets_at ? w.resets_at - now : null;
+    el.innerHTML = `
+      <div class="lbl"><span>${title}</span><span>${w.window_minutes ? (w.window_minutes / 60 >= 24 ? (w.window_minutes / 1440) + ' 天' : (w.window_minutes / 60) + ' 小時') + '視窗' : ''}</span></div>
+      <div class="val">${p.toFixed(0)}<small>% 已用</small></div>
+      <div class="track"><div class="fill" style="width:${p}%"></div></div>
+      <div class="reset"><span>重置倒數 <b data-reset="${w.resets_at || ''}">${fmtDur(remain)}</b></span><span>${w.resets_at ? fmtClock(w.resets_at) : ''}</span></div>`;
+  }
+
+  function renderTiles(el, d, hasCost) {
+    const t = d.windows.today, b = d.burn;
+    const tiles = [
+      ['今日 tokens', fmtTok(t.total), `${t.requests} 次請求`],
+      hasCost ? ['今日費用（等值 API）', fmtUsd(t.cost), `5 小時內 ${fmtUsd(d.windows['5h'].cost)}`]
+              : ['5 小時內 tokens', fmtTok(d.windows['5h'].total), `${d.windows['5h'].requests} 次請求`],
+      ['燃燒速率', fmtTok(b.tokens_per_min) + '/min', hasCost ? `≈ ${fmtUsd(b.cost_per_hour)}/hr` : `近 15 分鐘 ${b.requests} 次`],
+      ['近 7 天', fmtTok(d.windows['7d'].total), hasCost ? fmtUsd(d.windows['7d'].cost) : `${d.windows['7d'].requests} 次請求`],
+    ];
+    el.innerHTML = tiles.map(([l, v, s]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('');
+  }
+
+  function renderSpark(el, series, now, hasCost) {
+    const W = 600, H = 70, bucket = 300, n = 72;             // 6h of 5-min buckets
+    const start = Math.floor((now - 6 * 3600) / bucket) * bucket;
+    const map = new Map(series.map(([b, t, c]) => [b, [t, c]]));
+    const buckets = Array.from({ length: n }, (_, i) => { const b = start + i * bucket; const v = map.get(b) || [0, 0]; return { b, tok: v[0], cost: v[1] }; });
+    const max = Math.max(1, ...buckets.map((x) => x.tok));
+    const bw = W / n, gap = 2;
+    let bars = '';
+    buckets.forEach((x, i) => {
+      const h = x.tok ? Math.max(2, (x.tok / max) * (H - 6)) : 0;
+      const xx = i * bw + gap / 2;
+      bars += `<g data-i="${i}"><rect class="hit" x="${xx}" y="0" width="${bw - gap}" height="${H}"></rect><rect class="bar" x="${xx}" y="${H - h}" width="${bw - gap}" height="${h}" rx="1.5"></rect></g>`;
+    });
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}<line class="base" x1="0" y1="${H - .5}" x2="${W}" y2="${H - .5}"/></svg>
+      <div class="axis"><span>${fmtClock(start)}</span><span>峰值 ${fmtTok(max)} / 5 分</span><span>現在</span></div><div class="tip"></div>`;
+    const tip = el.querySelector('.tip');
+    el.querySelectorAll('g').forEach((g) => {
+      g.addEventListener('mousemove', (e) => {
+        const x = buckets[+g.dataset.i]; const r = el.getBoundingClientRect();
+        tip.style.display = 'block'; tip.style.left = (e.clientX - r.left) + 'px'; tip.style.top = (e.clientY - r.top) + 'px';
+        tip.textContent = `${fmtClock(x.b)}  ${fmtTok(x.tok)} tokens` + (hasCost && x.cost ? `  ${fmtUsd(x.cost)}` : '');
+      });
+      g.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    });
+  }
+
+  function renderModels(el, rows, hasCost) {
+    if (!rows.length) { el.innerHTML = '<div class="empty">今天尚無使用紀錄</div>'; return; }
+    el.innerHTML = `<table><thead><tr><th>模型</th><th class="num">輸入</th><th class="num">快取讀</th><th class="num">快取寫</th><th class="num">輸出</th><th class="num">請求</th>${hasCost ? '<th class="num">費用</th>' : ''}</tr></thead><tbody>` +
+      rows.map((m) => `<tr><td class="model" title="${esc(m.model)}">${esc(m.model)}</td><td class="num">${fmtTok(m.input)}</td><td class="num">${fmtTok(m.cache_read)}</td><td class="num">${fmtTok(m.cache_write)}</td><td class="num">${fmtTok(m.output)}</td><td class="num">${m.requests}</td>${hasCost ? `<td class="num">${fmtUsd(m.cost)}</td>` : ''}</tr>`).join('') + '</tbody></table>';
+  }
+
+  function renderSessions(el, rows, now, hasCost) {
+    if (!rows.length) { el.innerHTML = '<div class="empty">目前沒有活躍的 session</div>'; return; }
+    el.innerHTML = rows.slice(0, 8).map((s) => {
+      const name = s.project || s.session.slice(0, 8);
+      const win = s.context_window || 200000;
+      const pct = Math.min(100, s.context / win * 100);
+      return `<div class="row"><span class="name" title="${esc(s.session)}">${esc(name)} <span class="meta">· ${esc(s.model || '')}</span></span>
+        <span class="meta">${fmtAgo(now - s.last_ts)} · ${s.requests} 次 · ${fmtTok(s.total)}${hasCost ? ' · ' + fmtUsd(s.cost) : ''}</span>
+        <div class="ctx" title="context ${fmtTok(s.context)} / ${fmtTok(win)}"><i style="width:${pct}%"></i></div></div>`;
+    }).join('');
+  }
+
+  function renderExtra(el, extra) {
+    if (!extra || !extra.enabled || extra.utilization == null) { el.hidden = true; return; }
+    el.hidden = false;
+    const p = Math.max(0, Math.min(100, Number(extra.utilization)));
+    el.className = 'meter ' + severity(p);
+    const dp = extra.decimal_places ?? 2, div = Math.pow(10, dp);
+    const money = (v) => v == null ? '—' : (extra.currency === 'USD' ? '$' : (extra.currency || '') + ' ') + (v / div).toFixed(dp);
+    el.innerHTML = `
+      <div class="lbl"><span>額外用量 credits</span><span>每月</span></div>
+      <div class="val">${p.toFixed(0)}<small>% 已用</small></div>
+      <div class="track"><div class="fill" style="width:${p}%"></div></div>
+      <div class="reset"><span>已用 <b>${money(extra.used_credits)}</b></span><span>上限 ${money(extra.monthly_limit)}</span></div>`;
+  }
+
+  function renderSource(key, d, now, hasCost) {
+    const lim = d.limits || {};
+    $(`${key}-plan`).textContent = lim.plan ? lim.plan.replace(/_/g, ' ') : '未知方案';
+    const fresh = $(`${key}-fresh`);
+    const live = (snap.live || {})[key] || {};
+    if (lim.fetched_at) {
+      const age = now - lim.fetched_at;
+      const src = lim.source === 'live' ? '即時查詢' : 'CLI 快取';
+      const stale = age > 1800;
+      fresh.textContent = `額度 ${src} · ${fmtAgo(age)}` + (live.error && stale ? ' · 可能過時' : '');
+      fresh.className = 'fresh' + (stale ? ' old' : '');
+      fresh.title = live.error ? `即時查詢失敗：${live.error}（改用 CLI 快取）` : (lim.source === 'live' ? `每 ${live.interval || 60} 秒向官方端點查一次` : '這個 CLI 目前沒在執行，百分比可能已過時。');
+    } else { fresh.textContent = '額度資料：尚未取得' + (live.error ? `（${live.error}）` : '（請先執行一次該 CLI）'); fresh.className = 'fresh old'; }
+    renderMeter($(`${key}-5h`), '5 小時額度', lim.five_hour, now);
+    renderMeter($(`${key}-7d`), '每週額度', lim.seven_day, now);
+    if (key === 'claude') renderExtra($('claude-extra'), lim.extra_usage);
+    renderTiles($(`${key}-tiles`), d, hasCost);
+    renderSpark($(`${key}-spark`), d.series, now, hasCost);
+    renderModels($(`${key}-models`), d.models_today, hasCost);
+    renderSessions($(`${key}-sessions`), d.sessions, now, hasCost);
+  }
+
+  function renderPet() {
+    const on = !!(snap.pet && snap.pet.running);
+    const b = $('pet-toggle');
+    b.classList.toggle('on', on);
+    $('pet-label').textContent = on ? '桌面寵物：開' : '桌面寵物：關';
+  }
+
+  function render() {
+    if (!snap) return;
+    const now = Date.now() / 1000;
+    renderSource('claude', snap.claude, now, true);
+    renderSource('codex', snap.codex, now, snap.codex.windows.today.cost > 0);
+    renderPet();
+    $('err').hidden = !snap.last_error; $('err').textContent = snap.last_error ? '收集器錯誤：' + snap.last_error : '';
+  }
+
+  $('pet-toggle').addEventListener('click', async () => {
+    const b = $('pet-toggle'); const on = b.classList.contains('on');
+    b.classList.add('busy');
+    try {
+      const r = await fetch(on ? '/api/pet/stop' : '/api/pet/start', { method: 'POST' });
+      const st = await r.json();
+      if (snap) { snap.pet = st; renderPet(); }
+    } catch (e) { /* next poll re-syncs */ }
+    setTimeout(() => b.classList.remove('busy'), 800);
+  });
+
+  function tick() {                                          // 1 Hz: countdowns + status only
+    const now = Date.now() / 1000;
+    document.querySelectorAll('[data-reset]').forEach((b) => { const r = Number(b.dataset.reset); if (r) b.textContent = fmtDur(r - now); });
+    const age = now - lastOk;
+    $('dot').className = 'dot' + (age > 30 ? ' dead' : age > 8 ? ' stale' : '');
+    $('status').textContent = lastOk ? `每 2 秒更新 · 上次 ${fmtAgo(age)}` : '無法連線到後端';
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/api/snapshot', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      snap = await r.json(); lastOk = Date.now() / 1000; render();
+    } catch (e) { /* status dot shows staleness */ }
+  }
+  poll(); setInterval(poll, 2000); setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

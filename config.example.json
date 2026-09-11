@@ -1,0 +1,16 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "poll_interval": 2.0,
+
+  "_comment_live_usage": "Query the official usage endpoints with the CLIs' own tokens (sent only to api.anthropic.com / chatgpt.com). Set a source to false to rely on that CLI's local cache only. Intervals are in seconds (minimum 60); both endpoints throttle faster pollers.",
+  "live_usage": { "claude": true, "codex": true, "claude_interval": 180, "codex_interval": 300 },
+
+  "_comment_codex_prices": "USD per 1M tokens: [input, output, cached_input_multiplier]. Empty = show tokens only.",
+  "codex_prices": {
+  },
+
+  "_comment_claude_prices": "Optional overrides, same shape. Built-in table already covers current Claude models.",
+  "claude_prices": {
+  }
+}

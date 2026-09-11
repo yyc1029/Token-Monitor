@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local configuration (may contain custom prices / ports); ship the example only
+config.json
+
+# Runtime leftovers
+tokmon/assets/.cache/
+*.tmp
+*.log
