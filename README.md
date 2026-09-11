@@ -261,3 +261,9 @@ docs/screenshots/   README 用的截圖
 
 **PowerShell 腳本被擋？**
 用 `-ExecutionPolicy Bypass` 執行，或在系統管理員 PowerShell 跑 `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`。
+
+---
+
+## 授權
+
+[MIT](LICENSE)。隨附字型 Baloo 2 與 JetBrains Mono 為 SIL Open Font License 1.1。
