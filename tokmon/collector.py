@@ -7,10 +7,11 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .claude_source import ClaudeLimits, ClaudeUsage
 from .codex_source import CodexUsage
+from .history import DailyHistory, day_key, day_start
 from .live import FETCHERS, LiveError, merge_limits
 
 LIVE_CACHE_FILE = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "TokenMonitor", "live-cache.json")
@@ -86,6 +87,12 @@ class Collector:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="collector", daemon=True)
 
+        # Per-day totals for the year heatmap; outlives the 8-day event window.
+        self.history = DailyHistory()
+        self.history_error = None
+        self._history_next = 0.0
+        self._backfill_thread = threading.Thread(target=self._backfill, name="history-backfill", daemon=True)
+
         live_cfg = dict(DEFAULT_CONFIG["live_usage"])
         live_cfg.update(config.get("live_usage") or {})
         self.live_enabled = {k: bool(live_cfg.get(k)) for k in FETCHERS}
@@ -104,9 +111,53 @@ class Collector:
         self._thread.start()
         if any(self.live_enabled.values()):
             self._live_thread.start()
+        self._backfill_thread.start()
 
     def stop(self):
         self._stop.set()
+        self.history.save(force=True)
+
+    # -- daily history -----------------------------------------------------
+    def _backfill(self):
+        """One-off full scan of every transcript on disk (no age limit) so the
+        heatmap has data from before this monitor was first started. Runs in
+        the background; the live collector keeps the recent days current."""
+        makers = {
+            "claude": lambda: ClaudeUsage(max_age_days=None),
+            "codex": lambda: CodexUsage(max_age_days=None, price_table=self.codex_usage.price_table),
+        }
+        for src, make in makers.items():
+            if self._stop.is_set() or not self.history.needs_backfill(src, RETENTION_SECONDS):
+                continue
+            try:
+                days = defaultdict(_empty_agg)
+                for ev in make().poll():
+                    _add(days[day_key(ev["ts"])], ev)
+                self.history.replace_days(src, days)
+                self.history.mark_scanned(src, time.time())
+                self.history.save(force=True)
+            except Exception as exc:
+                self.history_error = f"{src}: {type(exc).__name__}: {exc}"
+
+    def _update_history(self, now):
+        """Rewrite every day the in-memory window covers completely."""
+        cutoff = now - RETENTION_SECONDS
+        with self.lock:
+            snapshot = {k: list(v) for k, v in self.events.items()}
+        # Days whose local midnight lies inside the window are complete in memory.
+        covered = set()
+        day = datetime.fromtimestamp(now).date()
+        while day_start(day.isoformat()) >= cutoff:
+            covered.add(day.isoformat())
+            day -= timedelta(days=1)
+        for src, events in snapshot.items():
+            days = defaultdict(_empty_agg)
+            for ev in events:
+                k = day_key(ev["ts"])
+                if k in covered:
+                    _add(days[k], ev)
+            self.history.replace_days(src, days, clear_keys=covered)
+        self.history.save()
 
     def _load_live_cache(self):
         """Last good result per source + the time each endpoint may next be asked."""
@@ -186,6 +237,10 @@ class Collector:
             self.last_poll = time.time()
         self.claude_usage.prune_seen()
         self.codex_usage.prune_seen()
+        now = time.time()
+        if new_claude or new_codex or now >= self._history_next:
+            self._history_next = now + 60
+            self._update_history(now)
 
     # -- snapshot ----------------------------------------------------------
     def snapshot(self):

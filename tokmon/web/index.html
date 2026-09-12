@@ -87,6 +87,29 @@
   .sess .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
   .sess .ctx { grid-column: 1 / -1; height: 4px; background: var(--grid); border-radius: 999px; overflow: hidden; }
   .sess .ctx i { display: block; height: 100%; background: var(--accent); }
+  .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .sec-head h3 { margin: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--surface-2); }
+  .seg button { font: inherit; font-size: 11px; color: var(--muted); background: none; border: 0; padding: 2px 9px; cursor: pointer; }
+  .seg button.on { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--border); border-radius: 999px; }
+  #card-claude { --heat: #d97757; } #card-codex { --heat: #10a37f; }
+  .heat { position: relative; }
+  .heat-wrap { overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+  .heat-grid { display: grid; grid-template-rows: 14px repeat(7, auto); gap: 3px; width: 100%; min-width: 560px; font-size: 10px; color: var(--muted); }
+  .heat-grid .m { grid-row: 1; white-space: nowrap; line-height: 14px; }
+  .heat-grid .d { grid-column: 1; font-size: 9px; line-height: 1; align-self: center; padding-right: 4px; }
+  .heat-grid .c { aspect-ratio: 1; min-width: 0; border-radius: 2px; background: var(--grid); }
+  .heat-grid .c.none { visibility: hidden; }
+  .heat-grid .c:hover { outline: 1px solid var(--ink); outline-offset: -1px; }
+  .heat .l1 { background: color-mix(in oklab, var(--heat) 32%, var(--grid)); }
+  .heat .l2 { background: color-mix(in oklab, var(--heat) 55%, var(--grid)); }
+  .heat .l3 { background: color-mix(in oklab, var(--heat) 78%, var(--grid)); }
+  .heat .l4 { background: var(--heat); }
+  .heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .heat-foot .legend { display: inline-flex; align-items: center; gap: 3px; }
+  .heat-foot .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .heat-foot .legend i.l0 { background: var(--grid); }
+  .heat-foot .legend span { margin: 0 3px; }
   .empty { color: var(--muted); font-size: 12px; }
   .err { color: var(--crit); font-size: 12px; margin-top: 12px; }
   .footnote { color: var(--muted); font-size: 11px; margin-top: 18px; }
@@ -112,6 +135,7 @@
     </div>
     <div class="tiles" id="claude-tiles"></div>
     <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="claude-spark"></div></section>
+    <section><div class="sec-head"><h3>近一年每日用量</h3><div class="seg" data-heat="claude"><button data-m="total" class="on">tokens</button><button data-m="cost">費用</button><button data-m="requests">請求</button></div></div><div class="heat" id="claude-heat"><div class="empty">載入中…</div></div></section>
     <section><h3>今日各模型</h3><div class="table-wrap" id="claude-models"></div></section>
     <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="claude-sessions"></div></section>
   </div>
@@ -127,6 +151,7 @@
     </div>
     <div class="tiles" id="codex-tiles"></div>
     <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="codex-spark"></div></section>
+    <section><div class="sec-head"><h3>近一年每日用量</h3><div class="seg" data-heat="codex"><button data-m="total" class="on">tokens</button><button data-m="cost" hidden>費用</button><button data-m="requests">請求</button></div></div><div class="heat" id="codex-heat"><div class="empty">載入中…</div></div></section>
     <section><h3>今日各模型</h3><div class="table-wrap" id="codex-models"></div></section>
     <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="codex-sessions"></div></section>
   </div>
@@ -216,6 +241,83 @@
     });
   }
 
+  // ---- year heatmap (GitHub-style, one column per week, Monday first) ----
+  let hist = null;
+  const heatMetric = { claude: 'total', codex: 'total' };
+  const heatCost = { claude: true, codex: false };
+  const dkey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const WD = ['一', '二', '三', '四', '五', '六', '日'];
+  function fmtMetric(m, v) { return m === 'cost' ? fmtUsd(v) : m === 'requests' ? `${v} 次` : fmtTok(v) + ' tokens'; }
+
+  function renderHeat(key) {
+    const el = $(`${key}-heat`);
+    if (!hist) return;
+    const days = (hist.days || {})[key] || {};
+    const metric = heatMetric[key];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const start = new Date(today); start.setDate(start.getDate() - 364);
+    start.setDate(start.getDate() - (start.getDay() + 6) % 7);          // back to Monday
+    const cells = [];
+    for (let d = new Date(start), c = 0; d <= today; d.setDate(d.getDate() + 1), c++) {
+      const k = dkey(d), rec = days[k];
+      cells.push({ k, d: new Date(d), col: Math.floor(c / 7), row: (d.getDay() + 6) % 7, v: rec ? rec[metric] || 0 : 0, rec });
+    }
+    const nCols = cells[cells.length - 1].col + 1;
+    const nz = cells.map((x) => x.v).filter((v) => v > 0).sort((a, b) => a - b);
+    const q = (p) => nz.length ? nz[Math.min(nz.length - 1, Math.floor(p * nz.length))] : Infinity;
+    const th = [q(.25), q(.5), q(.75)];
+    const level = (v) => v <= 0 ? 0 : 1 + th.filter((t) => v > t).length;
+
+    let html = '', lastLabel = -9;
+    WD.forEach((w, r) => { html += `<span class="d" style="grid-row:${r + 2}">${r % 2 === 0 ? w : ''}</span>`; });
+    for (let c = 0; c < nCols; c++) {
+      const first = cells.find((x) => x.col === c && x.d.getDate() === 1) || (c === 0 ? cells[0] : null);
+      if (first && c - lastLabel >= 3) { html += `<span class="m" style="grid-column:${c + 2} / span 4">${first.d.getMonth() + 1}月</span>`; lastLabel = c; }
+    }
+    cells.forEach((x) => { html += `<i class="c l${level(x.v)}" data-k="${x.k}" style="grid-column:${x.col + 2};grid-row:${x.row + 2}"></i>`; });
+
+    const active = cells.filter((x) => x.rec && x.rec.requests > 0);
+    const sum = active.reduce((a, x) => a + (x.rec[metric] || 0), 0);
+    let best = 0, run = 0;
+    cells.forEach((x) => { run = x.rec && x.rec.requests > 0 ? run + 1 : 0; best = Math.max(best, run); });
+    const scanning = !(hist.scanned_at || {})[key] && !hist.error;
+    const note = hist.error && hist.error.startsWith(key) ? `歷史掃描失敗：${esc(hist.error)}` : scanning ? '正在掃描完整歷史紀錄…' : `${active.length} 天有使用 · 合計 ${fmtMetric(metric, sum)} · 最長連續 ${best} 天`;
+    el.innerHTML = `<div class="heat-wrap"><div class="heat-grid" style="grid-template-columns:auto repeat(${nCols}, minmax(0, 1fr))">${html}</div></div>
+      <div class="heat-foot"><span>${note}</span><span class="legend"><span>少</span><i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span>多</span></span></div><div class="tip"></div>`;
+    const wrap = el.querySelector('.heat-wrap'); wrap.scrollLeft = wrap.scrollWidth;
+    const tip = el.querySelector('.tip'), byKey = new Map(cells.map((x) => [x.k, x]));
+    el.querySelector('.heat-grid').addEventListener('mousemove', (e) => {
+      const k = e.target.dataset && e.target.dataset.k; const x = k && byKey.get(k);
+      if (!x) { tip.style.display = 'none'; return; }
+      const r = el.getBoundingClientRect();
+      tip.style.display = 'block'; tip.style.left = (e.clientX - r.left) + 'px'; tip.style.top = (e.clientY - r.top - 6) + 'px';
+      const rec = x.rec;
+      tip.textContent = `${x.k}（${WD[x.row]}）  ` + (rec && rec.requests ? `${fmtTok(rec.total)} tokens · ${rec.requests} 次` + (heatCost[key] && rec.cost ? ` · ${fmtUsd(rec.cost)}` : '') : '沒有使用');
+    });
+    el.querySelector('.heat-grid').addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
+
+  document.querySelectorAll('.seg[data-heat]').forEach((seg) => {
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      heatMetric[seg.dataset.heat] = b.dataset.m;
+      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      renderHeat(seg.dataset.heat);
+    });
+  });
+
+  async function pollHistory() {
+    try {
+      const r = await fetch('/api/history', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      hist = await r.json();
+      renderHeat('claude'); renderHeat('codex');
+      // keep asking quickly until the first full scan has landed
+      const pending = !((hist.scanned_at || {}).claude && (hist.scanned_at || {}).codex) && !hist.error;
+      setTimeout(pollHistory, pending ? 3000 : 60000);
+    } catch (e) { setTimeout(pollHistory, 10000); }
+  }
+
   function renderModels(el, rows, hasCost) {
     if (!rows.length) { el.innerHTML = '<div class="empty">今天尚無使用紀錄</div>'; return; }
     el.innerHTML = `<table><thead><tr><th>模型</th><th class="num">輸入</th><th class="num">快取讀</th><th class="num">快取寫</th><th class="num">輸出</th><th class="num">請求</th>${hasCost ? '<th class="num">費用</th>' : ''}</tr></thead><tbody>` +
@@ -281,7 +383,9 @@
     if (!snap) return;
     const now = Date.now() / 1000;
     renderSource('claude', snap.claude, now, true);
-    renderSource('codex', snap.codex, now, snap.codex.windows.today.cost > 0);
+    const codexCost = snap.codex.windows.today.cost > 0 || snap.codex.windows['7d'].cost > 0;
+    renderSource('codex', snap.codex, now, codexCost);
+    if (heatCost.codex !== codexCost) { heatCost.codex = codexCost; document.querySelector('.seg[data-heat="codex"] [data-m="cost"]').hidden = !codexCost; renderHeat('codex'); }
     renderPet();
     $('err').hidden = !snap.last_error; $('err').textContent = snap.last_error ? '收集器錯誤：' + snap.last_error : '';
   }
@@ -312,7 +416,7 @@
       snap = await r.json(); lastOk = Date.now() / 1000; render();
     } catch (e) { /* status dot shows staleness */ }
   }
-  poll(); setInterval(poll, 2000); setInterval(tick, 1000);
+  poll(); pollHistory(); setInterval(poll, 2000); setInterval(tick, 1000);
 })();
 </script>
 </body>

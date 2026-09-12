@@ -41,6 +41,7 @@
 | 費用 | 等值 API 價格（內建價目表） | 需自行在 `config.json` 填單價 |
 | 燃燒速率（近 15 分鐘 tokens/min） | ✅ | ✅ |
 | 最近 6 小時流量圖 | ✅ | ✅ |
+| 近一年每日用量熱力圖（tokens / 費用 / 請求） | ✅ | ✅ |
 | 今日各模型明細 | ✅ | ✅ |
 | 進行中的 session 與 context 佔用 | ✅ | ✅ |
 | 桌面寵物 + 跨門檻 Windows 通知 | ✅ | ✅ |
@@ -64,7 +65,7 @@ python -m tokmon.server --open     # 伺服器 + 開瀏覽器
 python -m tokmon.pet               # 桌面寵物
 ```
 
-第一次啟動會掃描最近 8 天的對話紀錄（約 0.5 秒），之後只讀新增的部分。
+第一次啟動會掃描最近 8 天的對話紀錄（約 0.5 秒），之後只讀新增的部分；另外會在背景把全部歷史掃一遍（約 1 秒）建立每日用量表，給熱力圖用。
 
 ---
 
@@ -75,6 +76,7 @@ python -m tokmon.pet               # 桌面寵物
 - **額度儀表**：5 小時 / 每週的已用 %、重置倒數與時間；顏色依嚴重度變化（50 / 75 / 90%）。Claude 若有開額外用量會多一條 credits
 - **統計磚**：今日 tokens、今日費用、燃燒速率、近 7 天
 - **流量圖**：最近 6 小時每 5 分鐘的 token 量，滑鼠移上去看數字
+- **每日用量熱力圖**：GitHub 貢獻圖風格，一格一天、近一年，顏色越深用量越多（深淺以該來源自己的四分位數分級）。可切換 tokens / 費用 / 請求數，滑鼠移上去看當天明細，下方有使用天數、合計與最長連續天數
 - **今日各模型**：輸入 / 快取讀 / 快取寫 / 輸出 / 請求數 / 費用
 - **進行中的 session**：30 分鐘內有活動的 session，顯示專案、模型、context 佔用條
 - **右上角「桌面寵物：開/關」**：啟動或關閉寵物
@@ -165,6 +167,8 @@ Codex 綠色、Claude Code 蜜桃色各兩條（5h / week）與各自的 `reset`
 從本機對話紀錄計算，每 2 秒讀一次新增的部分，是真正即時的；但只包含**這台電腦**的使用。
 Claude 費用是等值 API 價格（輸入 / 輸出 / 快取讀 0.1× / 快取寫 5 分鐘 1.25×、1 小時 2×），訂閱制用戶當作參考值即可。
 
+記憶體只留 8 天的原始事件；熱力圖用的每日合計另外存在 `%LOCALAPPDATA%\TokenMonitor\daily-history.json`（保留 400 天）。第一次啟動、或伺服器停超過一週再開時，會在背景重新掃描全部對話紀錄把缺的日子補回來；8 天內的日子則由即時收集器每次整天覆寫，所以不會重複計算。
+
 ---
 
 ## 設定
@@ -210,6 +214,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall-autostart.ps1   # 移
 | 方法 | 路徑 | 說明 |
 |---|---|---|
 | GET | `/api/snapshot` | 儀表板用的完整 JSON（額度、視窗統計、模型、session、流量序列、寵物狀態） |
+| GET | `/api/history` | 每日用量表（近 400 天，兩個來源），熱力圖每 60 秒讀一次 |
 | GET | `/api/health` | 存活檢查 |
 | GET | `/api/pet` | 寵物是否在跑 |
 | POST | `/api/pet/start` | 啟動寵物 |
@@ -229,6 +234,7 @@ scripts/
 tokmon/
   server.py         HTTP 伺服器與 API
   collector.py      背景執行緒：讀紀錄、即時查詢、彙總視窗、快照
+  history.py        每日用量表（熱力圖用，持久化在 %LOCALAPPDATA%）
   tailer.py         增量讀取 JSONL（只讀新增的位元組）
   claude_source.py  Claude Code 額度快取 + 對話紀錄解析
   codex_source.py   Codex rate_limits + token_usage_record 解析

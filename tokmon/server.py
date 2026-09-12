@@ -42,6 +42,11 @@ def make_handler(collector: Collector):
                 snap = collector.snapshot()
                 snap["pet"] = pet_status()
                 return self._json(snap)
+            if path == "/api/history":
+                hist = collector.history.export()
+                hist["now"] = collector.last_poll
+                hist["error"] = collector.history_error
+                return self._json(hist)
             if path == "/api/health":
                 return self._json({"ok": True, "last_poll": collector.last_poll})
             if path == "/api/pet":
