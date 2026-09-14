@@ -9,3 +9,4 @@ config.json
 tokmon/assets/.cache/
 *.tmp
 *.log
+.env

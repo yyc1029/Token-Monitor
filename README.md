@@ -22,6 +22,7 @@
 - [桌面寵物](#桌面寵物)
 - [資料從哪裡來](#資料從哪裡來)
 - [設定](#設定)
+- [Discord Bot](#discord-bot)
 - [開機自動啟動](#開機自動啟動)
 - [API](#api)
 - [專案結構](#專案結構)
@@ -153,14 +154,18 @@ Codex 綠色、Claude Code 蜜桃色各兩條（5h / week）與各自的 `reset`
 | | 端點 | 預設間隔 |
 |---|---|---|
 | Claude | `GET https://api.anthropic.com/api/oauth/usage` | 3 分鐘 |
-| Codex | `GET https://chatgpt.com/backend-api/codex/usage` | 5 分鐘 |
+| Codex | 本機 `codex app-server` 的 `account/rateLimits/read` | 1 分鐘 |
 
 - token 只送到它的發行者，不寫回檔案、不送去別處
-- 查詢失敗（離線、token 過期）時退回 CLI 的本機快取，儀表板會標示來源與更新時間
-- 兩個端點都會限制查太勤的客戶端（Anthropic 約每分鐘一次就 429；chatgpt.com 前面的 Cloudflare 會回 403 挑戰頁）。
-  遇到就指數退避（10 → 20 → 40 分鐘，上限 1 小時，429 遵守 `Retry-After`），最後一次成功的值存在
-  `%LOCALAPPDATA%\TokenMonitor\live-cache.json`，重啟不會倒退
-- 重置時間已經過了的視窗，在查到新值之前顯示 0%
+- 查詢失敗時沿用最後一次成功的值（或更新的 CLI 快取），儀表板會標示來源與更新時間；超過 30 分鐘一律標「可能過時」
+- 失敗原因決定多久再試，不會一視同仁：
+  - **限流**（Anthropic 429、chatgpt.com 前面的 Cloudflare 403 挑戰頁）：指數退避 10 → 20 → 40 分鐘，上限 1 小時，429 遵守 `Retry-After`
+  - **斷網 / 逾時**（睡眠喚醒、Wi-Fi、VPN 切換）：1 → 2 → 4 分鐘，上限 10 分鐘
+  - **token 過期**：每 5–10 分鐘試一次，等 CLI 自己刷新
+- 偵測到電腦睡眠喚醒（時鐘一次跳超過 30 秒）就清掉累積的退避、立刻重查；限流中的只保留 1 分鐘緩衝
+- 視窗的重置時間一過（例如 5 小時視窗歸零），不等固定間隔、直接提早再查；查到之前顯示「已重置 · 等待更新」而不是假裝 0%
+- 最後一次成功的值存在 `%LOCALAPPDATA%\TokenMonitor\live-cache.json`，重啟不會倒退；重啟只繼承還沒到期的**限流**退避（連同原因），其他退避一律重來
+- 每次查詢的結果與原因都寫進 `%LOCALAPPDATA%\TokenMonitor\server.log`（3 × 512 KB 輪替）
 - Codex 每個回合結束都會自己把最新額度寫進本機紀錄，所以 Codex 活躍時本來就是即時的
 
 為什麼不只看 CLI 快取：Claude Code 很少刷新它（實測 2.5 小時沒動，快取寫 35%、實際已 87%），Codex 只在回合結束時才寫。
@@ -198,6 +203,67 @@ Claude 費用是等值 API 價格（輸入 / 輸出 / 快取讀 0.1× / 快取�
 
 ---
 
+## Discord Bot
+
+Discord 整合是選配功能，可在手機上用 Slash Command 查詢，並在額度跨過門檻或重置時收到通知。
+
+### 1. 安裝選配套件
+
+```powershell
+python -m pip install -r requirements-discord.txt
+```
+
+### 2. 建立 Discord App
+
+1. 到 [Discord Developer Portal](https://discord.com/developers/applications) 建立 Application。
+2. 在 **Bot** 頁面建立 Bot 並複製 token。
+3. 到 **OAuth2 → URL Generator**，勾選 `bot` 與 `applications.commands`。
+4. Bot 權限勾選 `View Channels`、`Send Messages`，使用產生的網址把 Bot 加入自己的伺服器。
+5. 在 Discord 開啟開發者模式，複製自己的 User ID 和接收通知的 Channel ID。
+
+把 token 放在使用者環境變數，切勿寫進 `config.json`：
+
+也可以直接雙擊 `setup-discord.bat`，在不顯示輸入內容的提示中貼上 Token；它會保存環境變數並重新啟動 Token Monitor。
+
+```powershell
+[Environment]::SetEnvironmentVariable("TOKMON_DISCORD_TOKEN", "你的 Bot Token", "User")
+```
+
+設定後要重新開啟命令列或重新登入 Windows，讓背景程式讀到新環境變數。
+
+### 3. 啟用設定
+
+把 `config.example.json` 複製成 `config.json`，並設定：
+
+```json
+"discord": {
+  "enabled": true,
+  "token_env": "TOKMON_DISCORD_TOKEN",
+  "allowed_user_ids": ["你的 User ID"],
+  "allow_all_users": false,
+  "notification_channel_id": "通知 Channel ID",
+  "dashboard_url": "手機可連線的 HTTPS 網址，未設定可留空",
+  "ephemeral": true,
+  "thresholds": [50, 80, 95],
+  "check_interval": 30
+}
+```
+
+重新啟動 Token Monitor 後可使用：
+
+| 指令 | 說明 |
+|---|---|
+| `/usage source:all` | 查看額度、重置倒數與今日 Token |
+| `/tokens source:codex` | 查看 Codex 今日／5 小時／7 天 Token |
+| `/status` | 查看資料更新狀態與即時額度錯誤 |
+| `/dashboard` | 顯示完整儀表板的連結按鈕（需先設定 `dashboard_url`） |
+
+`allowed_user_ids` 必須填入獲准查詢者；空白時預設拒絕所有 Slash Command。只有確定要讓 Bot 所在伺服器的所有人查詢時，
+才把 `allow_all_users` 改成 `true`。通知狀態存在
+`%LOCALAPPDATA%\TokenMonitor\discord-state.json`，首次啟動只建立基準，不會把目前已跨過的門檻全部補發。
+
+---
+
 ## 開機自動啟動
 
 ```powershell
@@ -213,6 +279,9 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall-autostart.ps1   # 移
 ## API
 
 伺服器只綁 `127.0.0.1`，可以接到 Rainmeter、PowerToys 或自己的腳本：
+
+若用 Tailscale Serve 給手機看，API 也會包含專案名稱、session 識別碼與用量；請保持 **tailnet only**，不要改用公開的
+Tailscale Funnel。Token Monitor 本身不提供帳密登入，存取控制由本機回環介面與 Tailscale 負責。
 
 | 方法 | 路徑 | 說明 |
 |---|---|---|
@@ -256,8 +325,9 @@ docs/screenshots/   README 用的截圖
 ## 常見問題
 
 **額度 % 一直沒變？**
-看卡片右上角的來源標示。「即時查詢」正常會每 3–5 分鐘更新；若顯示「CLI 快取」且很舊，通常是端點在限流退避中，
-把滑鼠移到標示上會看到原因與下次重試時間。token 統計不受影響。
+看卡片右上角的來源標示。「即時查詢」正常會每 3–5 分鐘更新，把滑鼠移到標示上會看到下次查詢時間；
+標成橘色「可能過時」代表超過 30 分鐘沒查到新值，通常是端點限流退避中或 token 過期，原因同樣在滑鼠提示裡，
+完整經過在 `%LOCALAPPDATA%\TokenMonitor\server.log`。token 統計不受影響。
 
 **Codex 沒有費用？**
 沒有內建 OpenAI 價目表，在 `config.json` 的 `codex_prices` 填入模型單價即可。

@@ -607,13 +607,12 @@ class Pet:
             snap = self.snap or {}
         for src, label, _ in SOURCES:
             lim = self._limits(src)
-            live = ((snap.get("live") or {}).get(src) or {})
             origin = "即時" if lim.get("source") == "live" else "快取"
             age_s = (now - lim["fetched_at"]) if lim.get("fetched_at") else None
             age = fmt_ago(age_s) if age_s is not None else "—"
             plan = (lim.get("plan") or "?").replace("_", " ")
-            # only flag a failed live query when the cache we fell back to is also old
-            stale_note = "  ·  可能過時" if live.get("error") and (age_s is None or age_s > 1800) else ""
+            # same rule as the dashboard: old is old, whatever the reason
+            stale_note = "  ·  可能過時" if lim.get("stale", age_s is None or age_s > 1800) else ""
             self._text(x, y, f"{label}  ·  {plan}  ·  {origin} {age}{stale_note}", self.f_detail_b, INK)
             y += lh
             parts = []

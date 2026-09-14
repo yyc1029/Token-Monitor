@@ -3,8 +3,8 @@
   "port": 8787,
   "poll_interval": 2.0,
 
-  "_comment_live_usage": "Query the official usage endpoints with the CLIs' own tokens (sent only to api.anthropic.com / chatgpt.com). Set a source to false to rely on that CLI's local cache only. Intervals are in seconds (minimum 60); both endpoints throttle faster pollers.",
-  "live_usage": { "claude": true, "codex": true, "claude_interval": 180, "codex_interval": 300 },
+  "_comment_live_usage": "Refresh official usage data. Codex uses its local app-server; Claude uses its authenticated web endpoint. Set a source to false to rely on that CLI's local cache only. Intervals are in seconds (minimum 60).",
+  "live_usage": { "claude": true, "codex": true, "claude_interval": 180, "codex_interval": 60 },
 
   "_comment_codex_prices": "USD per 1M tokens: [input, output, cached_input_multiplier]. Empty = show tokens only.",
   "codex_prices": {
@@ -12,5 +12,18 @@
 
   "_comment_claude_prices": "Optional overrides, same shape. Built-in table already covers current Claude models.",
   "claude_prices": {
+  },
+
+  "_comment_discord": "Optional Discord bot. Keep the bot token in the named environment variable, never in this file.",
+  "discord": {
+    "enabled": false,
+    "token_env": "TOKMON_DISCORD_TOKEN",
+    "allowed_user_ids": [],
+    "allow_all_users": false,
+    "notification_channel_id": "",
+    "dashboard_url": "",
+    "ephemeral": true,
+    "thresholds": [50, 80, 95],
+    "check_interval": 30
   }
 }

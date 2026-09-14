@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
+from .codex_limits import bucket_priority, normalize_windows
 from .pricing import codex_cost
 from .tailer import JsonlTailer
 
@@ -54,7 +55,7 @@ class CodexUsage:
                 "resets_at": w.get("resets_at"),
             }
         credits = rl.get("credits") or {}
-        return {
+        return normalize_windows({
             "fetched_at": ts,
             "five_hour": window(rl.get("primary")),
             "seven_day": window(rl.get("secondary")),
@@ -66,7 +67,13 @@ class CodexUsage:
                 "unlimited": credits.get("unlimited"),
                 "balance": credits.get("balance"),
             },
-        }
+        })
+
+    def _accept_limits(self, rl, ts):
+        """Keep the canonical account bucket ahead of auxiliary model buckets."""
+        candidate = bucket_priority(rl.get("limit_id"))
+        current = bucket_priority(self.limits.get("limit_id")) if self.limits else 0
+        return candidate > current or (candidate == current and ts >= self.limits_ts)
 
     @staticmethod
     def _thread_from_path(path):
@@ -96,10 +103,10 @@ class CodexUsage:
 
             if t == "event_msg" and payload.get("type") == "token_count":
                 rl = payload.get("rate_limits")
-                # Codex emits one token_count per limit bucket per turn; the
-                # "premium" bucket comes with primary/secondary = null and would
-                # otherwise overwrite the real "codex" numbers written 0.6 s earlier.
-                if rl and rl.get("primary") and ts >= self.limits_ts:
+                # Codex emits one token_count per limit bucket per turn.  The
+                # canonical "codex" account bucket must win over auxiliary
+                # feature/model buckets such as "codex_bengalfox".
+                if rl and rl.get("primary") and self._accept_limits(rl, ts):
                     self.limits = self._shape_limits(rl, ts)
                     self.limits_ts = ts
                 info = payload.get("info") or {}

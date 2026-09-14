@@ -13,6 +13,7 @@ HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
+RUNTIME_SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 
 
 def _parse_ts(s):
@@ -169,3 +170,45 @@ class ClaudeUsage:
         """Keep the dedupe set bounded on very long-running instances."""
         if len(self._seen) > 200_000:
             self._seen.clear()
+
+    def runtime_sessions(self):
+        """Read Claude's live process registry, including no-persistence runs."""
+        rows = []
+        try:
+            names = os.listdir(RUNTIME_SESSIONS_DIR)
+        except OSError:
+            return rows
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(RUNTIME_SESSIONS_DIR, name)
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            session_id = raw.get("sessionId")
+            if not session_id or raw.get("status") not in ("busy", "idle"):
+                continue
+            started = (raw.get("startedAt") or 0) / 1000
+            updated = (raw.get("updatedAt") or raw.get("startedAt") or 0) / 1000
+            cwd = raw.get("cwd") or ""
+            rows.append({
+                "session": session_id,
+                "project": raw.get("name") or os.path.basename(cwd.rstrip("\\/")) or cwd,
+                "model": "",
+                "first_ts": started,
+                "last_ts": updated,
+                "context": 0,
+                "context_window": None,
+                "input": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+                "total": 0,
+                "cost": 0.0,
+                "requests": 0,
+                "runtime": True,
+                "status": raw.get("status"),
+            })
+        return rows

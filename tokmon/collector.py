@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -10,16 +11,28 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from .claude_source import ClaudeLimits, ClaudeUsage
+from .codex_limits import normalize_windows
 from .codex_source import CodexUsage
 from .history import DailyHistory, day_key, day_start
-from .live import FETCHERS, LiveError, merge_limits
+from .live import (FETCHERS, THROTTLED, LiveError, backoff_seconds, merge_limits, restore_live_state,
+                   window_expired)
+
+log = logging.getLogger("tokmon.collector")
 
 LIVE_CACHE_FILE = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "TokenMonitor", "live-cache.json")
 RETENTION_SECONDS = 8 * 86400
-ACTIVE_SESSION_SECONDS = 30 * 60
+# A turn can run for hours without writing a completed assistant response.
+# Keep recent sessions visible long enough to survive those quiet stretches;
+# the UI still shows each session's exact last-activity age.
+ACTIVE_SESSION_SECONDS = 8 * 60 * 60
 BURN_WINDOW_SECONDS = 15 * 60
 SERIES_HOURS = 6
 SERIES_BUCKET = 5 * 60
+# Limits older than this are flagged on every surface, whatever the reason.
+STALE_SECONDS = 30 * 60
+# The live loop sleeps 5 s; a longer gap between two ticks means the machine
+# was asleep (Modern Standby included) and every pending backoff is void.
+WAKE_GAP_SECONDS = 30
 
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
@@ -27,13 +40,13 @@ DEFAULT_CONFIG = {
     "poll_interval": 2.0,
     "codex_prices": {},
     "claude_prices": {},
+    "discord": {"enabled": False},
     # Ask the CLIs' own usage endpoints directly (tokens already on disk, sent only
     # to their issuer). Without this the percentages only move when the CLI feels
     # like refreshing its cache.
-    # Both endpoints throttle eager pollers (Anthropic: 429 at ~1/min; chatgpt.com:
-    # Cloudflare challenges). 3 min for Claude is fresh enough for a 5-hour window;
-    # Codex writes fresh limits itself after every turn, so 5 min is plenty.
-    "live_usage": {"claude": True, "codex": True, "claude_interval": 180, "codex_interval": 300},
+    # Claude's web endpoint is conservative; Codex uses its local app-server
+    # and can refresh safely about once per minute.
+    "live_usage": {"claude": True, "codex": True, "claude_interval": 180, "codex_interval": 60},
 }
 
 
@@ -62,6 +75,14 @@ def _add(agg, ev):
     agg["cost"] += ev["cost"]
     agg["requests"] += 1
     return agg
+
+
+def _pct(window):
+    return None if not window else window.get("used_percent")
+
+
+def _fmt_wait(seconds):
+    return f"{int(seconds // 60)} 分" if seconds >= 60 else f"{int(seconds)} 秒"
 
 
 def _local_midnight(now):
@@ -100,9 +121,9 @@ class Collector:
         self.live_interval = {k: max(60.0, float(live_cfg.get(f"{k}_interval", base))) for k in FETCHERS}
         # Last good live result per source, persisted so a restart during a
         # rate-limit backoff does not regress to the CLI's older cache.
-        self.live, self._live_next = self._load_live_cache()
-        self.live_error = {k: None for k in FETCHERS}
-        self._live_fail = {k: 0 for k in FETCHERS}      # consecutive failures -> exponential backoff
+        # _live_state[src]: next (earliest next attempt), fails (consecutive
+        # failures), kind (why the last attempt failed), error, attempted_at.
+        self.live, self._live_state = self._load_live_cache()
         self._live_thread = threading.Thread(target=self._live_loop, name="live-usage", daemon=True)
 
     # -- lifecycle ---------------------------------------------------------
@@ -160,58 +181,84 @@ class Collector:
         self.history.save()
 
     def _load_live_cache(self):
-        """Last good result per source + the time each endpoint may next be asked."""
-        results = {k: None for k in FETCHERS}
-        nxt = {k: 0.0 for k in FETCHERS}
+        """Last good result per source + whatever backoff a restart may inherit."""
+        saved = None
         try:
             with open(LIVE_CACHE_FILE, "r", encoding="utf-8") as fh:
                 saved = json.load(fh)
-            for k in FETCHERS:
-                if isinstance(saved.get(k), dict) and saved[k].get("fetched_at"):
-                    results[k] = saved[k]
-                nxt[k] = float((saved.get("_next") or {}).get(k) or 0.0)
         except (OSError, ValueError):
             pass
-        return results, nxt
+        results, state = restore_live_state(saved, time.time())
+        for k, st in state.items():
+            if st["kind"]:
+                log.info("live %s: inheriting %s backoff until %s (%s)", k, st["kind"],
+                         time.strftime("%H:%M:%S", time.localtime(st["next"])), st["error"])
+        return results, state
 
     def _save_live_cache(self):
         try:
             os.makedirs(os.path.dirname(LIVE_CACHE_FILE), exist_ok=True)
             with self.lock:
                 data = dict(self.live)
-            data["_next"] = dict(self._live_next)
+                data["_state"] = {k: dict(v) for k, v in self._live_state.items()}
             tmp = LIVE_CACHE_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh)
             os.replace(tmp, LIVE_CACHE_FILE)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("live cache not saved: %s", exc)
+
+    def _on_wake(self, now, gap):
+        """The clock jumped: the machine slept. Failures accumulated while the
+        network was down say nothing about the endpoints, so forget them.  A
+        throttle that was in force keeps a short grace period only."""
+        log.info("clock jumped %.0f s (sleep/resume); resetting live backoff", gap)
+        with self.lock:
+            for src, st in self._live_state.items():
+                st["fails"] = 0
+                if st["kind"] == THROTTLED:
+                    st["next"] = min(st["next"], now + 60)
+                else:
+                    st["next"] = min(st["next"], now)
+                    st["kind"] = None
+
+    def _live_due(self, src, now):
+        st = self._live_state[src]
+        if now >= st["next"]:
+            return True
+        # A window reset since the last fetch: the number on screen is wrong by
+        # definition, so refresh early unless the endpoint is pushing back.
+        return st["fails"] == 0 and window_expired(self.live.get(src), now)
 
     def _live_loop(self):
+        last_tick = time.time()
         while not self._stop.is_set():
             now = time.time()
+            if now - last_tick > WAKE_GAP_SECONDS:
+                self._on_wake(now, now - last_tick)
+            last_tick = now
             for src, fetch in FETCHERS.items():
-                if not self.live_enabled[src] or now < self._live_next[src]:
+                if not self.live_enabled[src] or not self._live_due(src, now):
                     continue
+                st = self._live_state[src]
+                st["attempted_at"] = now
                 try:
                     result = fetch()
                     with self.lock:
                         self.live[src] = result
-                        self.live_error[src] = None
-                    self._live_fail[src] = 0
-                    self._live_next[src] = now + self.live_interval[src]
+                        st.update({"fails": 0, "kind": None, "error": None, "next": now + self.live_interval[src]})
+                    log.info("live %s: ok 5h=%s 7d=%s", src, _pct(result.get("five_hour")), _pct(result.get("seven_day")))
                 except LiveError as exc:
-                    # exponential backoff on repeated failures so we stop feeding
-                    # the throttle: retry_after x 1, 2, 4 ... capped at one hour
-                    self._live_fail[src] += 1
-                    wait = min(3600, max(exc.retry_after, self.live_interval[src]) * 2 ** (self._live_fail[src] - 1))
+                    wait = backoff_seconds(exc.kind, exc.retry_after, self.live_interval[src], st["fails"] + 1)
                     with self.lock:
-                        self.live_error[src] = f"{exc} · 下次 {int(wait // 60)} 分後"
-                    self._live_next[src] = now + wait
+                        st.update({"fails": st["fails"] + 1, "kind": exc.kind, "next": now + wait,
+                                   "error": f"{exc} · 下次 {_fmt_wait(wait)}後"})
+                    log.warning("live %s: %s failure #%d: %s; next try in %.0f s", src, exc.kind, st["fails"], exc, wait)
                 except Exception as exc:  # never let one bad response kill the loop
                     with self.lock:
-                        self.live_error[src] = f"{type(exc).__name__}: {exc}"
-                    self._live_next[src] = now + 300
+                        st.update({"fails": st["fails"] + 1, "kind": "error", "next": now + 300,
+                                   "error": f"{type(exc).__name__}: {exc}"})
+                    log.exception("live %s: unexpected error", src)
                 self._save_live_cache()
             self._stop.wait(5)
 
@@ -249,23 +296,32 @@ class Collector:
             claude_events = list(self.events["claude"])
             codex_events = list(self.events["codex"])
             live = dict(self.live)
-            live_error = dict(self.live_error)
+            live_state = {k: dict(v) for k, v in self._live_state.items()}
         claude_limits = merge_limits(self.claude_limits.read(), live["claude"])
-        codex_limits = merge_limits(self.codex_usage.limits, live["codex"])
+        codex_limits = normalize_windows(merge_limits(self.codex_usage.limits, live["codex"]))
         return {
             "now": now,
             "last_poll": self.last_poll,
             "last_error": self.last_error,
             "started_at": self.started_at,
-            "live": {k: {"enabled": self.live_enabled[k], "error": live_error[k],
-                         "interval": self.live_interval[k]} for k in FETCHERS},
-            "claude": self._source_snapshot(claude_events, claude_limits, now),
+            "live": {k: {"enabled": self.live_enabled[k], "error": live_state[k]["error"],
+                         "error_kind": live_state[k]["kind"], "fails": live_state[k]["fails"],
+                         "interval": self.live_interval[k],
+                         "last_attempt": live_state[k]["attempted_at"],
+                         "next_attempt": live_state[k]["next"] if self.live_enabled[k] else None}
+                     for k in FETCHERS},
+            "claude": self._source_snapshot(
+                claude_events, claude_limits, now, self.claude_usage.runtime_sessions()
+            ),
             "codex": self._source_snapshot(codex_events, codex_limits, now),
         }
 
     @staticmethod
     def _expire_windows(limits, now):
-        """A window whose resets_at has passed is 0 % until the next fetch says otherwise."""
+        """A window whose resets_at has passed is 0 % until the next fetch says
+        otherwise; it is tagged `expired` so the UI can say "waiting" instead of
+        presenting 0 % as a measurement.  `age`/`stale` let every consumer (web,
+        pet, Discord) flag old data by one rule."""
         if not limits:
             return limits
         out = dict(limits)
@@ -273,9 +329,12 @@ class Collector:
             w = out.get(key)
             if w and w.get("resets_at") and w["resets_at"] < now - 60 and (w.get("used_percent") or 0) > 0:
                 out[key] = {**w, "used_percent": 0, "expired": True}
+        age = (now - out["fetched_at"]) if out.get("fetched_at") else None
+        out["age"] = age
+        out["stale"] = age is None or age > STALE_SECONDS
         return out
 
-    def _source_snapshot(self, events, limits, now):
+    def _source_snapshot(self, events, limits, now, runtime_sessions=None):
         limits = self._expire_windows(limits, now)
         events.sort(key=lambda e: e["ts"])
         midnight = _local_midnight(now)
@@ -324,9 +383,21 @@ class Collector:
                 if ev.get("context_window"):
                     s["context_window"] = ev["context_window"]
 
+        # Claude's --no-session-persistence mode never writes token events to
+        # projects/*.jsonl while it runs.  Merge its separate process registry
+        # so the session remains visible without inventing token counts.
+        for runtime in runtime_sessions or []:
+            session_id = runtime["session"]
+            existing = sessions.get(session_id)
+            if existing:
+                existing.update({k: v for k, v in runtime.items() if k in ("runtime", "status")})
+            else:
+                sessions[session_id] = dict(runtime)
+
         session_list = sorted(sessions.values(), key=lambda s: s["last_ts"], reverse=True)
         for s in session_list:
-            s.update(s.pop("agg"))
+            if "agg" in s:
+                s.update(s.pop("agg"))
 
         model_list = sorted(
             ({"model": m, **agg} for m, agg in models_today.items()),

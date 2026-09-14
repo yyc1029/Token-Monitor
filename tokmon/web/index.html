@@ -46,6 +46,7 @@
   .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); background: var(--surface-2); text-transform: capitalize; }
   .fresh { font-size: 12px; color: var(--muted); }
   .fresh.old { color: var(--warn); }
+  .meter.expired .val, .meter.expired .reset { color: var(--muted); }
   .meter-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
   @media (max-width: 560px) { .meter-row { grid-template-columns: 1fr; } }
   .meter { background: var(--surface-2); border-radius: 10px; padding: 12px 14px; }
@@ -87,6 +88,8 @@
   .sess .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
   .sess .ctx { grid-column: 1 / -1; height: 4px; background: var(--grid); border-radius: 999px; overflow: hidden; }
   .sess .ctx i { display: block; height: 100%; background: var(--accent); }
+  .sess .ctx.indeterminate i { width: 32%; animation: session-busy 1.4s ease-in-out infinite; }
+  @keyframes session-busy { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
   .sec-head h3 { margin: 0; }
   .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--surface-2); }
@@ -134,10 +137,10 @@
       <div class="meter" id="claude-extra" hidden></div>
     </div>
     <div class="tiles" id="claude-tiles"></div>
-    <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="claude-spark"></div></section>
+    <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="claude-spark"></div><div class="empty" id="claude-spark-note" hidden></div></section>
     <section><div class="sec-head"><h3>近一年每日用量</h3><div class="seg" data-heat="claude"><button data-m="total" class="on">tokens</button><button data-m="cost">費用</button><button data-m="requests">請求</button></div></div><div class="heat" id="claude-heat"><div class="empty">載入中…</div></div></section>
     <section><h3>今日各模型</h3><div class="table-wrap" id="claude-models"></div></section>
-    <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="claude-sessions"></div></section>
+    <section><h3>最近的 session（8 小時內）</h3><div class="sess" id="claude-sessions"></div></section>
   </div>
 
   <div class="card" id="card-codex">
@@ -150,14 +153,15 @@
       <div class="meter" id="codex-7d"></div>
     </div>
     <div class="tiles" id="codex-tiles"></div>
+    <div class="empty">Token 數是本機對話處理量，不等同 Codex 訂閱額度的扣除單位；上方百分比才是官方額度。</div>
     <section><h3>最近 6 小時 token 流量</h3><div class="spark" id="codex-spark"></div></section>
     <section><div class="sec-head"><h3>近一年每日用量</h3><div class="seg" data-heat="codex"><button data-m="total" class="on">tokens</button><button data-m="cost" hidden>費用</button><button data-m="requests">請求</button></div></div><div class="heat" id="codex-heat"><div class="empty">載入中…</div></div></section>
     <section><h3>今日各模型</h3><div class="table-wrap" id="codex-models"></div></section>
-    <section><h3>進行中的 session（30 分鐘內）</h3><div class="sess" id="codex-sessions"></div></section>
+    <section><h3>最近的 session（8 小時內）</h3><div class="sess" id="codex-sessions"></div></section>
   </div>
 </div>
 <div class="err" id="err" hidden></div>
-<div class="footnote">額度百分比預設每 60 秒向 Anthropic / OpenAI 官方端點即時查詢（使用本機 CLI 已登入的 token，只送到發行者），查不到時退回 CLI 的本機快取；token 與費用由本機對話紀錄計算。Claude 費用為等值 API 價格，Codex 費用需在 config.json 填入單價。</div>
+<div class="footnote">額度百分比預設每 3 分鐘（Claude）/ 1 分鐘（Codex）更新；Claude 只向 Anthropic 官方端點送出它自己的登入 token，Codex 透過本機 app-server 查詢。視窗一重置就提早再查；查不到時沿用上次的值並標示「可能過時」。token 與費用由本機對話紀錄計算。Claude 費用為等值 API 價格，Codex 費用需在 config.json 填入單價。</div>
 
 <script>
 (function () {
@@ -194,21 +198,26 @@
       return;
     }
     const p = Math.max(0, Math.min(100, Number(w.used_percent)));
-    el.className = 'meter ' + severity(p);
+    el.className = 'meter ' + severity(p) + (w.expired ? ' expired' : '');
     const remain = w.resets_at ? w.resets_at - now : null;
+    // After the reset time the 0 % is an assumption, not a reading: say so.
+    const val = w.expired ? `0<small>% 已重置 · 等待更新</small>` : `${p.toFixed(0)}<small>% 已用</small>`;
+    const resetRow = w.expired
+      ? `<span>上次視窗已於 ${w.resets_at ? fmtClock(w.resets_at) : '—'} 重置</span><span>新視窗尚未查到</span>`
+      : `<span>重置倒數 <b data-reset="${w.resets_at || ''}">${fmtDur(remain)}</b></span><span>${w.resets_at ? fmtClock(w.resets_at) : ''}</span>`;
     el.innerHTML = `
       <div class="lbl"><span>${title}</span><span>${w.window_minutes ? (w.window_minutes / 60 >= 24 ? (w.window_minutes / 1440) + ' 天' : (w.window_minutes / 60) + ' 小時') + '視窗' : ''}</span></div>
-      <div class="val">${p.toFixed(0)}<small>% 已用</small></div>
+      <div class="val">${val}</div>
       <div class="track"><div class="fill" style="width:${p}%"></div></div>
-      <div class="reset"><span>重置倒數 <b data-reset="${w.resets_at || ''}">${fmtDur(remain)}</b></span><span>${w.resets_at ? fmtClock(w.resets_at) : ''}</span></div>`;
+      <div class="reset">${resetRow}</div>`;
   }
 
   function renderTiles(el, d, hasCost) {
     const t = d.windows.today, b = d.burn;
     const tiles = [
-      ['今日 tokens', fmtTok(t.total), `${t.requests} 次請求`],
+      [hasCost ? '今日 tokens' : '今日處理 tokens', fmtTok(t.total), `${t.requests} 次請求`],
       hasCost ? ['今日費用（等值 API）', fmtUsd(t.cost), `5 小時內 ${fmtUsd(d.windows['5h'].cost)}`]
-              : ['5 小時內 tokens', fmtTok(d.windows['5h'].total), `${d.windows['5h'].requests} 次請求`],
+              : ['5 小時內處理 tokens', fmtTok(d.windows['5h'].total), `${d.windows['5h'].requests} 次請求`],
       ['燃燒速率', fmtTok(b.tokens_per_min) + '/min', hasCost ? `≈ ${fmtUsd(b.cost_per_hour)}/hr` : `近 15 分鐘 ${b.requests} 次`],
       ['近 7 天', fmtTok(d.windows['7d'].total), hasCost ? fmtUsd(d.windows['7d'].cost) : `${d.windows['7d'].requests} 次請求`],
     ];
@@ -325,14 +334,19 @@
   }
 
   function renderSessions(el, rows, now, hasCost) {
-    if (!rows.length) { el.innerHTML = '<div class="empty">目前沒有活躍的 session</div>'; return; }
+    if (!rows.length) { el.innerHTML = '<div class="empty">最近 8 小時沒有 session 活動</div>'; return; }
     el.innerHTML = rows.slice(0, 8).map((s) => {
       const name = s.project || s.session.slice(0, 8);
       const win = s.context_window || 200000;
       const pct = Math.min(100, s.context / win * 100);
-      return `<div class="row"><span class="name" title="${esc(s.session)}">${esc(name)} <span class="meta">· ${esc(s.model || '')}</span></span>
-        <span class="meta">${fmtAgo(now - s.last_ts)} · ${s.requests} 次 · ${fmtTok(s.total)}${hasCost ? ' · ' + fmtUsd(s.cost) : ''}</span>
-        <div class="ctx" title="context ${fmtTok(s.context)} / ${fmtTok(win)}"><i style="width:${pct}%"></i></div></div>`;
+      const activity = s.runtime ? (s.status === 'busy' ? '執行中' : '待命') : fmtAgo(now - s.last_ts);
+      const detail = s.runtime && !s.requests ? '無持久化：沒有即時 token 明細' : `${s.requests} 次 · ${fmtTok(s.total)}${hasCost ? ' · ' + fmtUsd(s.cost) : ''}`;
+      const contextBar = s.runtime && !s.context
+        ? '<div class="ctx indeterminate" title="無持久化模式：無法讀取即時 context"><i></i></div>'
+        : `<div class="ctx" title="context ${fmtTok(s.context)} / ${fmtTok(win)}"><i style="width:${pct}%"></i></div>`;
+      return `<div class="row"><span class="name" title="${esc(s.session)}">${esc(name)} <span class="meta">${s.model ? '· ' + esc(s.model) : ''}</span></span>
+        <span class="meta">${activity} · ${detail}</span>
+        ${contextBar}</div>`;
     }).join('');
   }
 
@@ -355,19 +369,30 @@
     $(`${key}-plan`).textContent = lim.plan ? lim.plan.replace(/_/g, ' ') : '未知方案';
     const fresh = $(`${key}-fresh`);
     const live = (snap.live || {})[key] || {};
+    const nextIn = live.next_attempt ? Math.max(0, live.next_attempt - now) : null;
+    const nextNote = live.enabled ? (nextIn == null ? '' : nextIn < 5 ? '，正在查詢' : `，${fmtDur(nextIn)} 後再查`) : '（即時查詢已關閉）';
     if (lim.fetched_at) {
       const age = now - lim.fetched_at;
       const src = lim.source === 'live' ? '即時查詢' : 'CLI 快取';
-      const stale = age > 1800;
-      fresh.textContent = `額度 ${src} · ${fmtAgo(age)}` + (live.error && stale ? ' · 可能過時' : '');
+      // Old is old, whatever the reason - a restart or a silent backoff must not hide it.
+      const stale = lim.stale ?? age > 1800;
+      fresh.textContent = `額度 ${src} · ${fmtAgo(age)}` + (stale ? ' · 可能過時' : '');
       fresh.className = 'fresh' + (stale ? ' old' : '');
-      fresh.title = live.error ? `即時查詢失敗：${live.error}（改用 CLI 快取）` : (lim.source === 'live' ? `每 ${live.interval || 60} 秒向官方端點查一次` : '這個 CLI 目前沒在執行，百分比可能已過時。');
+      fresh.title = live.error ? `即時查詢失敗：${live.error}（暫用上次的值）` : (lim.source === 'live' ? `每 ${Math.round((live.interval || 180) / 60)} 分鐘向官方端點查一次${nextNote}` : `這個 CLI 目前沒在執行，百分比可能已過時${nextNote}`);
     } else { fresh.textContent = '額度資料：尚未取得' + (live.error ? `（${live.error}）` : '（請先執行一次該 CLI）'); fresh.className = 'fresh old'; }
-    renderMeter($(`${key}-5h`), '5 小時額度', lim.five_hour, now);
+    const shortMeter = $(`${key}-5h`);
+    shortMeter.hidden = key === 'codex' && !lim.five_hour;
+    if (!shortMeter.hidden) renderMeter(shortMeter, '5 小時額度', lim.five_hour, now);
     renderMeter($(`${key}-7d`), '每週額度', lim.seven_day, now);
     if (key === 'claude') renderExtra($('claude-extra'), lim.extra_usage);
     renderTiles($(`${key}-tiles`), d, hasCost);
     renderSpark($(`${key}-spark`), d.series, now, hasCost);
+    if (key === 'claude') {
+      const note = $('claude-spark-note');
+      const pending = d.sessions.some((s) => s.runtime && s.status === 'busy' && !s.requests) && !d.burn.requests;
+      note.hidden = !pending;
+      note.textContent = pending ? 'Claude 正在執行無持久化回合；此模式不提供可加入圖表的即時 token 明細。' : '';
+    }
     renderModels($(`${key}-models`), d.models_today, hasCost);
     renderSessions($(`${key}-sessions`), d.sessions, now, hasCost);
   }

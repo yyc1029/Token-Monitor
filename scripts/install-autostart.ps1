@@ -5,6 +5,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $taskName = "TokenMonitor"
 
 $pythonw = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
+$fallback = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\pythonw.exe"
+if (-not $pythonw -and (Test-Path $fallback)) { $pythonw = $fallback }
 if (-not $pythonw) { throw "pythonw.exe not found on PATH. Install Python 3.11+ and tick 'Add to PATH'." }
 
 # The pet starts the server itself when the port is not answering, so one task covers both.
